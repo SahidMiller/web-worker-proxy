@@ -18,7 +18,7 @@ const proxies = new WeakMap();
  * Proxies an object inside an worker.
  * This should be called inside an worker.
  */
-export default function proxy(o: Object, target?: Worker = self) {
+export default function proxy(o: Object, target?: Worker = self, options = {}) {
   if (proxies.has(target)) {
     throw new Error(
       'The specified target already has a proxy. To create a new proxy, call `dispose` first to dispose the previous proxy.'
@@ -32,6 +32,9 @@ export default function proxy(o: Object, target?: Worker = self) {
 
   // Listen to messages from the client
   const listener = (e: any) => {
+    const intercepted = options.intercept && options.intercept(e);
+    if (typeof intercepted !== 'undefined') return;
+
     switch (e.data.type) {
       case ACTION_OPERATION:
         {
@@ -42,7 +45,7 @@ export default function proxy(o: Object, target?: Worker = self) {
 
             for (const action of data) {
               if (action.type === 'get') {
-                result = result[action.key];
+                result = action.key === "default" ? (result[action.key] || result) : result[action.key];
               } else if (action.type === 'set') {
                 // Reflect.set will return a boolean to indicate if setting the property was successful
                 // Setting the property might fail if the object is read only
@@ -149,13 +152,13 @@ export default function proxy(o: Object, target?: Worker = self) {
     }
   };
 
-  target.addEventListener('message', listener);
+  target.onmessage = listener;
 
   return {
     // Return a method to dispose the proxy
     // Disposing will remove the listeners and the proxy will stop working
     dispose: () => {
-      target.removeEventListener('message', listener);
+      target.onmessage = null;
       proxies.delete(target);
     },
   };

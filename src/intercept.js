@@ -1,19 +1,23 @@
 /* @flow */
 
+import { data } from 'core-js/internals/is-forced';
 import type { Action } from './types';
+import { Readable, Writable } from 'stream';
 
 /**
  * Intercepts actions such as property access, function call etc. and records in an array.
  */
 export default function intercept(
   callback: (Action[]) => Promise<mixed>,
-  o: Function | Object = {},
-  actions: Action[] = []
+  previousTarget: Function | Object = {},
+  actions: Action[] = [],
+  lastResult: Object
 ): any {
   // We execute the promise lazily and cache it here to avoid calling again
   let promise;
+  let isPromise;
 
-  return new Proxy(o, {
+  const proxy = new Proxy(previousTarget, {
     construct(target, args) {
       const previous = actions.slice(0, actions.length - 1);
       const last = actions[actions.length - 1];
@@ -25,6 +29,48 @@ export default function intercept(
       ]);
     },
     get(target, key) {
+      if (key === "then" && isPromise) {
+        return proxy;
+      }
+      
+      // Intercept fn.apply by returning a new intercept that acts as the old
+      if (key === "apply") {
+        return (_, args) => target(...args);
+      }
+
+      if (key === "call") {
+        return (_, ...args) => target(...args);
+      }
+
+      if (key === "name") {
+        const last = actions[actions.length - 1];
+        return last.key;
+      }
+
+      if (globalThis.debugFns && globalThis.debugFns.indexOf(key) !== -1) {
+        debugger;
+      }
+
+      if (key === Symbol.toPrimitive) {
+        return () => callback(actions)
+      }
+
+      // Intercept object values from previous response
+      if (lastResult) {
+        if (lastResult.hasOwnProperty(key)) {
+          const result = lastResult[key];
+          const isPrimitive = result !== Object(result) || result.type === "Buffer" || result instanceof Array || result instanceof Readable || result instanceof Writable || result instanceof Date
+          if (isPrimitive) return result;
+        } 
+
+        if (key === "then") {
+          return intercept(callback, (success) => {
+            isPromise = true;
+            success(proxy)
+          }, actions, lastResult)
+        }
+      }
+
       // Here we intercept both function calls and property access
       // If the key was `then`, we create a `thenable` so that the result can be awaited
       // This makes sure that the result can be used like a promise in case it's a property access
@@ -42,10 +88,17 @@ export default function intercept(
         // If properties are accessed instead, we'll intercept them and treat them as usual
         return intercept(callback, then, [...actions, { type: 'get', key }]);
       }
-
+      
       function func(...args) {
         // It's a function call
-        return callback([...actions, { type: 'apply', key, args }]);
+        let result = callback([...actions, { type: 'apply', key, args }]);
+        const isPrimitive = result !== Object(result) || result.type === "Buffer" || result instanceof Array || result instanceof Readable || result instanceof Writable || result instanceof Date
+
+        if (result && result.type === "Buffer") {
+          result = Buffer.from(result.data);
+        }
+
+        return isPrimitive ? result : intercept(callback, func, [...actions, { type: 'apply', key, args }], result);
       }
 
       return intercept(callback, func, [...actions, { type: 'get', key }]);
@@ -59,4 +112,6 @@ export default function intercept(
       return callback([...actions, { type: 'set', key, value }]);
     },
   });
+
+  return proxy
 }

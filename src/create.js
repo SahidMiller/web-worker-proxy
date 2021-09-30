@@ -14,25 +14,36 @@ import {
 } from './constants';
 import type { Worker } from './types';
 
+type CreateOptions = {
+  +send: (data: mixed) => mixed,
+  +get: (data: mixed) => mixed
+}
+
 /**
  * Creates a proxied web worker.
  * This should be called in the DOM context.
  */
-export default function create(worker: Worker): any {
+export default function create(worker: Worker, options: CreateOptions): any {
+  const deferred = {};
+  
   // Send actions to the worker and wait for result
-  const send = (type, data) =>
-    new Promise((resolve, reject) => {
+  const send = function (type, data) {
+
+    const sentManualRetValue = options && options.send && options.send(data, (actions, result) => {
+      return intercept(operations => send(ACTION_OPERATION, operations), result, actions, result)
+    });
+
+    if (typeof sentManualRetValue !== 'undefined') return sentManualRetValue
+
+    return new Promise((resolve, reject) => {
       // Unique id to identify the current action
       const id = uid();
 
       // For function calls, store any callbacks we're sending
       const callbacks = new Map();
 
-      // Store a variable to indicate whether the task has been fulfilled
-      let fulfilled = false;
-
       if (type === ACTION_OPERATION) {
-        const last = data[data.length - 1];
+        const last = data[data.length - 1] || {};
 
         if (last.type === 'apply') {
           // If we have a function call, map callbacks in the function call to refs
@@ -83,65 +94,71 @@ export default function create(worker: Worker): any {
         }
       }
 
-      // Listener to handle incoming messages from the worker
-      const listener = e => {
-        switch (e.data.type) {
-          case RESULT_SUCCESS:
-            if (e.data.id === id) {
-              // If the success result was for current action, resolve the promise
-              resolve(deserialize(e.data.result));
-
-              fulfilled = true;
-
-              removeListener();
-            }
-
-            break;
-
-          case RESULT_ERROR:
-            if (e.data.id === id) {
-              reject(deserialize(e.data.error));
-
-              fulfilled = true;
-
-              removeListener();
-            }
-
-            break;
-
-          case RESULT_CALLBACK:
-            if (e.data.id === id) {
-              // Get the referenced callback
-              const { ref, args } = e.data.func;
-              const callback = callbacks.get(ref);
-
-              if (callback) {
-                callback.apply(null, args.map(deserialize));
-
-                if (callback.type !== TYPE_PERSISTED_FUNCTION) {
-                  // Remove the callback if it's not persisted
-                  callbacks.delete(ref);
-                }
-              } else {
-                // Function is already disposed
-                // This shouldn't happen
-              }
-
-              removeListener();
-            }
-        }
-      };
-
-      const removeListener = () => {
-        if (callbacks.size === 0 && fulfilled) {
-          // Remove the listener once there are no callbacks left and task is fulfilled
-          worker.removeEventListener('message', listener);
-        }
-      };
-
-      worker.addEventListener('message', listener);
+      deferred[id] = { resolve, reject, callbacks, type, id, data, count: count++ };
       worker.postMessage({ type, id, data });
     });
+  }
+  
+  // Listener to handle incoming messages from the worker
+  worker.onmessage = e => {
+    const id = e.data.id;
+    const deferredPromise = deferred[e.data.id];
+
+    if (deferredPromise) {
+      const { resolve, reject, callbacks, fulfilled } = deferredPromise;
+      
+      const setFulfilled = () => {
+        deferredPromise.fulfilled = true;
+      }
+
+      // Store a variable to indicate whether the task has been fulfilled
+      const removeListener = () => {
+        
+        if (callbacks.size === 0 && fulfilled) {          
+          // Remove the listener once there are no callbacks left and task is fulfilled
+          delete deferred[id];
+        }       
+      }
+
+      switch (e.data.type) {
+        case RESULT_SUCCESS:
+          // If the success result was for current action, resolve the promise
+          resolve(deserialize(e.data.result));
+
+          setFulfilled(true);
+
+          removeListener();  
+          break;
+  
+        case RESULT_ERROR:
+          reject(deserialize(e.data.error));
+
+          setFulfilled(true);
+
+          removeListener();
+          break;
+  
+        case RESULT_CALLBACK:
+          // Get the referenced callback
+          const { ref, args } = e.data.func;
+          const callback = callbacks.get(ref);
+
+          if (callback) {
+            callback.apply(null, args.map(deserialize));
+
+            if (callback.type !== TYPE_PERSISTED_FUNCTION) {
+              // Remove the callback if it's not persisted
+              callbacks.delete(ref);
+            }
+          } else {
+            // Function is already disposed
+            // This shouldn't happen
+          }
+
+          removeListener();
+      }
+    }
+  };
 
   return intercept(operations => send(ACTION_OPERATION, operations));
 }
