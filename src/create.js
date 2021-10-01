@@ -94,7 +94,7 @@ export default function create(worker: Worker, options: CreateOptions): any {
         }
       }
 
-      deferred[id] = { resolve, reject, callbacks, type, id, data, count: count++ };
+      deferred[id] = { resolve, reject, callbacks, type, id, data };
       worker.postMessage({ type, id, data });
     });
   }

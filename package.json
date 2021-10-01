@@ -1,5 +1,5 @@
 {
-  "name": "web-worker-proxy",
+  "name": "@sahidmiller/web-worker-proxy",
   "version": "0.5.5",
   "description": "A better way of working with web workers",
   "keywords": [
@@ -21,8 +21,8 @@
   "scripts": {
     "lint": "eslint .",
     "flow": "flow",
-    "build": "babel src --out-dir lib --ignore '**/__tests__/**' --source-maps && flow-copy-source -i '**/__tests__/**' src lib",
-    "prebuild": "del lib/",
+    "build": "npx babel src --out-dir lib --ignore '**/__tests__/**' --source-maps && npx flow-copy-source -i '**/__tests__/**' src lib",
+    "prebuild": "rm -rf ./lib/",
     "prepare": "yarn build",
     "example": "parcel example/index.html",
     "test": "jest",
@@ -54,12 +54,6 @@
     "prettier": "^1.18.2",
     "release-it": "^12.3.0",
     "structured-clone": "^0.2.2"
-  },
-  "husky": {
-    "hooks": {
-      "commit-msg": "commitlint -E HUSKY_GIT_PARAMS",
-      "pre-commit": "yarn lint && yarn flow && yarn test"
-    }
   },
   "jest": {
     "testEnvironment": "node",
